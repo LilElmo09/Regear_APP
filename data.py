@@ -47,9 +47,9 @@ AODP_BATCH    = 100  # IDs por request
 # Mapeo tier app → (prefijo_albion, sufijo_encantamiento)
 TIER_API = {
     "T7":  ("T7", ""),
-    "T8":  ("T8", ""),
-    "T9":  ("T8", "@1"),
-    "T10": ("T8", "@2"),
+    "T8":  ("T5", "@3"),
+    "T9":  ("T6", "@3"),
+    "T10": ("T7", "@3"),
     "T11": ("T8", "@3"),
 }
 
