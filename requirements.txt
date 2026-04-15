@@ -1,0 +1,5 @@
+# RegearApp Dependencies
+# Tkinter comes with Python installation by default
+# No external Python packages required for core functionality
+# PyInstaller needed for building standalone executables
+pyinstaller>=6.0.0

@@ -1,0 +1,55 @@
+name: Build Windows Executable
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Get full history for git tags
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Generate version
+      id: version
+      run: |
+        pip install packaging
+        python build_version.py
+        $version = Get-Content version.txt -Raw
+        echo "VERSION=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Build executable
+      run: |
+        pyinstaller --onefile --windowed --name "RegearApp" --icon=icon.ico main.py
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: dist/RegearApp.exe
+        tag_name: v${{ steps.version.outputs.VERSION }}
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: RegearApp-Windows-${{ steps.version.outputs.VERSION }}
+        path: dist/RegearApp.exe
+        retention-days: 30
