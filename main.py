@@ -18,7 +18,11 @@ from ui_calculator import CalculatorFrame
 from ui_prices import PricesFrame
 from ui_presets import PresetsFrame
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, 'frozen', False):
+    # Ejecutable PyInstaller: buscar CSVs junto al .exe
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PRICES_CSV = os.path.join(BASE_DIR, "MAGA Regear Charts - Price Charts.csv")
 PRESETS_CSV = os.path.join(BASE_DIR, "presets.csv")
 

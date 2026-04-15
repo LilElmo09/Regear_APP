@@ -39,7 +39,7 @@ jobs:
 
     - name: Build executable
       run: |
-        pyinstaller --onefile --windowed --name "RegearApp" --icon=icon.ico main.py
+        pyinstaller RegearApp.spec
 
     - name: Create and push tag
       run: |
@@ -53,7 +53,10 @@ jobs:
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        files: dist/RegearApp.exe
+        files: |
+          dist/RegearApp.exe
+          MAGA Regear Charts - Price Charts.csv
+          presets.csv
         tag_name: v${{ steps.version.outputs.VERSION }}
         name: RegearApp v${{ steps.version.outputs.VERSION }}
         generate_release_notes: true
@@ -64,5 +67,8 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: RegearApp-Windows-${{ steps.version.outputs.VERSION }}
-        path: dist/RegearApp.exe
+        path: |
+          dist/RegearApp.exe
+          MAGA Regear Charts - Price Charts.csv
+          presets.csv
         retention-days: 30
