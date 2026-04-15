@@ -7,12 +7,12 @@ from __future__ import annotations
 import os
 import sys
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 
 # Asegurar que el directorio actual esté en el path para importaciones relativas
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from data import CSVDataSource
+from data import APIDataSource
 from presets import CSVPresetSource
 from ui_calculator import CalculatorFrame
 from ui_prices import PricesFrame
@@ -33,11 +33,29 @@ class RegearApp(tk.Tk):
         # ── Fuentes de datos ────────────────────────────────────────────
         self._preset_source = CSVPresetSource(PRESETS_CSV)
 
-        # Intentar cargar el CSV de precios automáticamente si existe
-        self._ds: CSVDataSource | None = None
+        # Intentar cargar el CSV de precios automáticamente
+        self._ds: APIDataSource | None = None
         prices_path = os.path.normpath(PRICES_CSV)
-        if os.path.exists(prices_path):
-            self._ds = CSVDataSource(prices_path)
+        try:
+            if os.path.exists(prices_path):
+                self._ds = APIDataSource(prices_path)
+            else:
+                # Mostrar advertencia clara si el CSV no existe
+                msg = (
+                    f"Archivo de precios no encontrado:\n"
+                    f"{prices_path}\n\n"
+                    f"Por favor, asegúrate de que el archivo CSV esté en el mismo "
+                    f"directorio que la aplicación."
+                )
+                messagebox.showwarning("CSV No Encontrado", msg)
+        except Exception as e:
+            # Capturar cualquier error al inicializar los datos
+            msg = (
+                f"Error al cargar el archivo de precios:\n"
+                f"{str(e)}\n\n"
+                f"Por favor, verifica que el archivo está en formato CSV válido."
+            )
+            messagebox.showerror("Error al Cargar CSV", msg)
 
         # ── Notebook ────────────────────────────────────────────────────
         notebook = ttk.Notebook(self)

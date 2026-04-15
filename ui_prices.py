@@ -6,14 +6,14 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-from data import CSVDataSource, TIERS, ALL_CATEGORIES
+from data import APIDataSource, CSVDataSource, TIERS, ALL_CATEGORIES
 
 
 class PricesFrame(ttk.Frame):
-    def __init__(self, parent: tk.Widget, ds: CSVDataSource | None = None,
+    def __init__(self, parent: tk.Widget, ds: APIDataSource | CSVDataSource | None = None,
                  on_data_changed=None):
         super().__init__(parent)
-        self._ds: CSVDataSource | None = ds
+        self._ds: APIDataSource | CSVDataSource | None = ds
         self._on_data_changed = on_data_changed
         self._build_ui()
         if self._ds:
@@ -77,7 +77,7 @@ class PricesFrame(ttk.Frame):
         self._editing: tuple | None = None  # (iid, col_idx, tier)
 
     # ---------------------------------------------------------------- populate
-    def set_datasource(self, ds: CSVDataSource) -> None:
+    def set_datasource(self, ds: APIDataSource | CSVDataSource) -> None:
         self._ds = ds
         self._populate()
 
@@ -99,13 +99,51 @@ class PricesFrame(ttk.Frame):
     def _on_search(self, *_) -> None:
         self._populate()
 
-    # ─────────────────────────────────── actualizar (recargar CSV)
+    # ─────────────────────────────────── actualizar (desde API con caché en CSV)
     def _actualizar(self) -> None:
         if self._ds is None:
             messagebox.showwarning("Sin datos", "No hay datos cargados.")
             return
-        self._ds.reload()
-        self._status_lbl.set("CSV recargado")
+        
+        # Si es APIDataSource, obtener precios desde la API
+        if isinstance(self._ds, APIDataSource):
+            self._status_lbl.set("Actualizando desde API...")
+            self.update()
+            # Ejecutar refresh y obtener reporte detallado
+            result = self._ds.refresh()
+            # Guardar los cambios en CSV como caché
+            self._ds.save()
+            # Mostrar el mensaje principal
+            self._status_lbl.set(result['message'])
+            
+            # COMENTADO PARA PRODUCCION - Reporte detallado solo para debugging
+            # if result['items_not_found'] or result['prices_zero'] or result['errors']:
+            #     report = "REPORTE DE ACTUALIZACION:\n\n"
+            #     report += f"Precios actualizados: {result['updated']}\n"
+            #     
+            #     if result['items_not_found']:
+            #         report += f"\nItems SIN api_id ({len(result['items_not_found'])}):\n"
+            #         for item in result['items_not_found']:
+            #             report += f"  - {item}\n"
+            #     
+            #     if result['prices_zero']:
+            #         report += f"\nItems con PRECIO 0 en API ({len(result['prices_zero'])}):\n"
+            #         for item in result['prices_zero'][:10]:  # Mostrar max 10
+            #             report += f"  - {item}\n"
+            #         if len(result['prices_zero']) > 10:
+            #             report += f"  ... y {len(result['prices_zero']) - 10} mas\n"
+            #     
+            #     if result['errors']:
+            #         report += f"\nErrores:\n"
+            #         for err in result['errors']:
+            #             report += f"  - {err}\n"
+            #     
+            #     messagebox.showinfo("Reporte de Actualizacion", report)
+        else:
+            # Si es CSVDataSource, solo recargar desde archivo
+            self._ds.reload()
+            self._status_lbl.set("CSV recargado")
+        
         self._populate()
         if self._on_data_changed:
             self._on_data_changed()

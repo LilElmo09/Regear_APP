@@ -122,23 +122,31 @@ class CSVDataSource(DataSource):
         self._path = path
         self._data: dict[str, dict] = {}
         if os.path.exists(path):
-            self._load()
+            try:
+                self._load()
+            except Exception as e:
+                raise ValueError(f"Error al leer CSV {path}: {e}")
 
     def _load(self) -> None:
         self._data = {}
-        with open(self._path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                name = row.get("nombre", "").strip()
-                if not name:
-                    continue
-                prices = {t: int(row.get(TIER_COL[t], 0) or 0) for t in TIERS}
-                self._data[name] = {
-                    **prices,
-                    "api_id":    row.get("api_id", "").strip(),
-                    "categoria": (row.get("categoria", "").strip()
-                                  or _detect_category(name)),
-                }
+        try:
+            with open(self._path, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    name = row.get("nombre", "").strip()
+                    if not name:
+                        continue
+                    prices = {t: int(row.get(TIER_COL[t], 0) or 0) for t in TIERS}
+                    self._data[name] = {
+                        **prices,
+                        "api_id":    row.get("api_id", "").strip(),
+                        "categoria": (row.get("categoria", "").strip()
+                                      or _detect_category(name)),
+                    }
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Archivo CSV no encontrado: {self._path}")
+        except ValueError as e:
+            raise ValueError(f"Error de formato en CSV: {e}")
 
     def reload(self, path: str | None = None) -> None:
         if path:
@@ -197,23 +205,42 @@ class APIDataSource(DataSource):
 
     # ── API pública ─────────────────────────────────────────────────────────
 
-    def refresh(self) -> str:
+    def refresh(self) -> dict:
         """
         Consulta la AODP API y actualiza los precios en memoria.
         Respeta un cooldown de AODP_COOLDOWN segundos entre llamadas.
-        Retorna un mensaje de estado para mostrar en la UI.
+        
+        Retorna un dict con estructura:
+        {
+            'success': bool,
+            'message': str,  # Mensaje para mostrar
+            'updated': int,  # Precios actualizados
+            'errors': list[str],  # Errores
+            'items_not_found': list[str],  # Items sin api_id
+            'prices_zero': list[str],  # Items con precio 0
+        }
         """
         now = time.time()
         elapsed = now - self._last_fetch
         if self._last_fetch > 0 and elapsed < AODP_COOLDOWN:
             remaining = int(AODP_COOLDOWN - elapsed)
-            return f"Espera {remaining}s antes de volver a actualizar"
+            return {
+                'success': False,
+                'message': f"Espera {remaining}s antes de volver a actualizar",
+                'updated': 0,
+                'errors': [],
+                'items_not_found': [],
+                'prices_zero': [],
+            }
 
         # Construir mapa full_api_id → (nombre_item, tier)
         item_map: dict[str, tuple[str, str]] = {}
+        items_without_api_id: list[str] = []
+        
         for name, data in self._data.items():
             base_id = data.get("api_id", "")
             if not base_id:
+                items_without_api_id.append(name)
                 continue
             for tier in TIERS:
                 prefix, suffix = TIER_API[tier]
@@ -221,11 +248,19 @@ class APIDataSource(DataSource):
                 item_map[full_id] = (name, tier)
 
         if not item_map:
-            return "Ningún ítem tiene api_id — nada que actualizar"
+            return {
+                'success': False,
+                'message': "Ningún ítem tiene api_id — nada que actualizar",
+                'updated': 0,
+                'errors': [],
+                'items_not_found': items_without_api_id,
+                'prices_zero': [],
+            }
 
         ids = list(item_map.keys())
         errors: list[str] = []
         updated = 0
+        prices_zero: list[str] = []
 
         for i in range(0, len(ids), AODP_BATCH):
             batch = ids[i:i + AODP_BATCH]
@@ -236,20 +271,35 @@ class APIDataSource(DataSource):
                     for entry in json.loads(resp.read()):
                         full_id = entry.get("item_id", "")
                         price   = entry.get("sell_price_min", 0)
-                        if full_id in item_map and price > 0:
+                        if full_id in item_map:
                             name, tier = item_map[full_id]
-                            self._data[name][tier] = price
-                            updated += 1
+                            if price > 0:
+                                self._data[name][tier] = price
+                                updated += 1
+                            elif price == 0:
+                                prices_zero.append(f"{name} ({tier})")
             except Exception as exc:
                 errors.append(str(exc))
 
         self._last_fetch = time.time()
+        
+        ts = datetime.datetime.now().strftime("%H:%M")
         if errors:
-            self._status = f"Error: {errors[0]}"
+            message = f"Error: {errors[0]}"
+            success = False
         else:
-            ts = datetime.datetime.now().strftime("%H:%M")
-            self._status = f"Actualizado a las {ts} ({updated} precios)"
-        return self._status
+            message = f"Actualizado a las {ts} ({updated} precios)"
+            success = True
+        
+        self._status = message
+        return {
+            'success': success,
+            'message': message,
+            'updated': updated,
+            'errors': errors,
+            'items_not_found': items_without_api_id,
+            'prices_zero': prices_zero,
+        }
 
     def get_status(self) -> str:
         return self._status
