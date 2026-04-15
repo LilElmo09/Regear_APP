@@ -6,15 +6,16 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-from data import CSVDataSource, TIERS
+from data import CSVDataSource, APIDataSource, TIERS
 
 
 class PricesFrame(ttk.Frame):
     def __init__(self, parent: tk.Widget, ds: CSVDataSource | None = None,
-                 on_data_changed=None):
+                 on_data_changed=None, on_source_changed=None):
         super().__init__(parent)
-        self._ds: CSVDataSource | None = ds
-        self._on_data_changed = on_data_changed  # callback para notificar cambios
+        self._ds: CSVDataSource | APIDataSource | None = ds
+        self._on_data_changed   = on_data_changed
+        self._on_source_changed = on_source_changed
         self._build_ui()
         if self._ds:
             self._populate()
@@ -29,17 +30,23 @@ class PricesFrame(ttk.Frame):
         self._source_var = tk.StringVar(value="CSV")
         ttk.Radiobutton(top, text="CSV", variable=self._source_var,
                         value="CSV").grid(row=0, column=0, padx=(0, 4))
-        ttk.Radiobutton(top, text="API (Próximamente)", variable=self._source_var,
-                        value="API", state="disabled").grid(row=0, column=1, padx=(0, 12))
+        ttk.Radiobutton(top, text="API (AODP)", variable=self._source_var,
+                        value="API").grid(row=0, column=1, padx=(0, 12))
+        self._source_var.trace_add("write", self._source_changed)
 
-        ttk.Button(top, text="Guardar", command=self._save).grid(row=0, column=2, padx=4)
-        ttk.Button(top, text="Recargar", command=self._reload).grid(row=0, column=3, padx=4)
+        ttk.Button(top, text="Guardar",       command=self._save      ).grid(row=0, column=2, padx=4)
+        ttk.Button(top, text="↻ Actualizar",  command=self._actualizar).grid(row=0, column=3, padx=4)
+
+        # Label de estado de la API / carga
+        self._status_api = tk.StringVar(value="")
+        ttk.Label(top, textvariable=self._status_api,
+                  foreground="gray").grid(row=0, column=4, padx=(8, 16))
 
         # Búsqueda
-        ttk.Label(top, text="Buscar:").grid(row=0, column=4, padx=(16, 4))
+        ttk.Label(top, text="Buscar:").grid(row=0, column=5, padx=(0, 4))
         self._search_var = tk.StringVar()
         self._search_var.trace_add("write", self._on_search)
-        ttk.Entry(top, textvariable=self._search_var, width=20).grid(row=0, column=5)
+        ttk.Entry(top, textvariable=self._search_var, width=20).grid(row=0, column=6)
 
         # ── Treeview ────────────────────────────────────────────────────
         tree_frame = ttk.Frame(self)
@@ -71,11 +78,14 @@ class PricesFrame(ttk.Frame):
         self._edit_entry = ttk.Entry(self._tree)
         self._edit_entry.bind("<Return>", self._commit_edit)
         self._edit_entry.bind("<Escape>", lambda e: self._edit_entry.place_forget())
-        self._editing: tuple | None = None  # (iid, column_index)
+        self._editing: tuple | None = None  # (iid, column_index, tier)
 
     # ---------------------------------------------------------------- populate
-    def set_datasource(self, ds: CSVDataSource) -> None:
+    def set_datasource(self, ds: CSVDataSource | APIDataSource) -> None:
         self._ds = ds
+        self._status_api.set(
+            ds.get_status() if isinstance(ds, APIDataSource) else ""
+        )
         self._populate()
 
     def _populate(self) -> None:
@@ -92,20 +102,43 @@ class PricesFrame(ttk.Frame):
     def _on_search(self, *_) -> None:
         self._populate()
 
-    # ─────────────────────────────────────── inline edit (double-click)
+    # ─────────────────────────────────── fuente CSV / API
+    def _source_changed(self, *_) -> None:
+        self._status_api.set("")
+        if self._on_source_changed:
+            self._on_source_changed(self._source_var.get())
+
+    # ─────────────────────────────────── actualizar precios
+    def _actualizar(self) -> None:
+        if self._ds is None:
+            messagebox.showwarning("Sin datos", "Carga los precios primero.")
+            return
+        if isinstance(self._ds, APIDataSource):
+            self._status_api.set("Consultando API…")
+            self.update_idletasks()          # forzar redibujado antes del bloqueo de red
+            msg = self._ds.refresh()
+            self._status_api.set(msg)
+        else:
+            self._ds.reload()
+            self._status_api.set("CSV recargado")
+        self._populate()
+        if self._on_data_changed:
+            self._on_data_changed()
+
+    # ─────────────────────────────────────────── inline edit (double-click)
     def _on_double_click(self, event: tk.Event) -> None:
         region = self._tree.identify("region", event.x, event.y)
         if region != "cell":
             return
-        col_id = self._tree.identify_column(event.x)
+        col_id  = self._tree.identify_column(event.x)
         col_idx = int(col_id.replace("#", "")) - 1  # 0-based
-        if col_idx == 0:  # nombre no editable inline
+        if col_idx == 0:
             return
         iid = self._tree.identify_row(event.y)
         if not iid:
             return
 
-        tier = TIERS[col_idx - 1]
+        tier        = TIERS[col_idx - 1]
         current_val = self._tree.set(iid, col_id)
 
         bbox = self._tree.bbox(iid, col_id)
@@ -171,13 +204,6 @@ class PricesFrame(ttk.Frame):
         self._ds.save()
         messagebox.showinfo("Guardado", "Precios guardados correctamente.")
 
-    def _reload(self) -> None:
-        if self._ds is None:
-            messagebox.showwarning("Sin datos", "No hay datos cargados.")
-            return
-        self._ds.reload()
-        self._populate()
-
 
 # ─────────────────────────────────────────────────── Dialog para nuevo ítem
 class _ItemDialog(tk.Toplevel):
@@ -203,8 +229,8 @@ class _ItemDialog(tk.Toplevel):
 
         btn_frame = ttk.Frame(self)
         btn_frame.grid(row=len(TIERS) + 1, column=0, columnspan=2, pady=8)
-        ttk.Button(btn_frame, text="Guardar",   command=self._ok    ).pack(side="left", padx=6)
-        ttk.Button(btn_frame, text="Cancelar",  command=self.destroy).pack(side="left", padx=6)
+        ttk.Button(btn_frame, text="Guardar",  command=self._ok    ).pack(side="left", padx=6)
+        ttk.Button(btn_frame, text="Cancelar", command=self.destroy).pack(side="left", padx=6)
 
     def _ok(self) -> None:
         name = self._name_var.get().strip()

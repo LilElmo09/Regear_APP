@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from calculator import calculate_total
-from data import CSVDataSource, TIERS, ALL_CATEGORIES
+from data import CSVDataSource, TIERS, ALL_CATEGORIES, SLOT_CATEGORY
 
 SLOT_LABELS = ["Arma", "Offhand", "Casco", "Armadura", "Botas", "Capa", "Mochila", "Comida", "Montura"]
 DEFAULT_TIER = "T8"
@@ -199,9 +199,10 @@ class CalculatorFrame(ttk.Frame):
     def _refresh_slot_items(self) -> None:
         if self._ds is None:
             return
-        all_items = list(self._ds.get_all().keys())
-        for slot in self._slots:
-            slot.refresh_items(all_items)
+        for slot_row, label in zip(self._slots, SLOT_LABELS):
+            cat = SLOT_CATEGORY.get(label.lower())
+            items = self._ds.get_items_by_category(cat) if cat else []
+            slot_row.refresh_items(items)
 
     def _load_preset(self, nombre: str) -> None:
         presets = self._preset_source.get_all()

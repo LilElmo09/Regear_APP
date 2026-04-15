@@ -12,7 +12,7 @@ from tkinter import ttk
 # Asegurar que el directorio actual esté en el path para importaciones relativas
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from data import CSVDataSource
+from data import CSVDataSource, APIDataSource
 from presets import CSVPresetSource
 from ui_calculator import CalculatorFrame
 from ui_prices import PricesFrame
@@ -34,7 +34,7 @@ class RegearApp(tk.Tk):
         self._preset_source = CSVPresetSource(PRESETS_CSV)
 
         # Intentar cargar el CSV de precios automáticamente si existe
-        self._ds: CSVDataSource | None = None
+        self._ds: CSVDataSource | APIDataSource | None = None
         prices_path = os.path.normpath(PRICES_CSV)
         if os.path.exists(prices_path):
             self._ds = CSVDataSource(prices_path)
@@ -56,6 +56,7 @@ class RegearApp(tk.Tk):
             notebook,
             ds=self._ds,
             on_data_changed=self._on_prices_data_changed,
+            on_source_changed=self._on_source_changed,
         )
         notebook.add(self._prices_frame, text="  Gestión de Precios  ")
 
@@ -87,6 +88,19 @@ class RegearApp(tk.Tk):
     def _on_presets_changed(self) -> None:
         """Llamado cuando se crea/edita/elimina un preset."""
         self._calc_frame.refresh_presets()
+
+    def _on_source_changed(self, source: str) -> None:
+        """Llamado cuando el usuario cambia entre fuente CSV y API en Pestaña 2."""
+        path = self._ds.get_path() if self._ds else PRICES_CSV
+        if source == "API":
+            new_ds = APIDataSource(path)   # Solo carga CSV, sin llamada a la API
+        else:
+            new_ds = CSVDataSource(path)
+            new_ds.reload()
+        self._ds = new_ds
+        self._prices_frame.set_datasource(new_ds)
+        self._calc_frame.set_datasource(new_ds)
+        self._presets_frame.set_datasource(new_ds)
 
 
 def main() -> None:
