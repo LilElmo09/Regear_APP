@@ -47,7 +47,6 @@ class RegearApp(tk.Tk):
         self._calc_frame = CalculatorFrame(
             notebook,
             preset_source=self._preset_source,
-            on_prices_loaded=self._on_prices_loaded,
         )
         notebook.add(self._calc_frame, text="  Calculadora  ")
 
@@ -73,12 +72,6 @@ class RegearApp(tk.Tk):
             self._calc_frame.set_datasource(self._ds)
 
     # ─────────────────────────────────────────── Callbacks entre pestañas
-    def _on_prices_loaded(self, ds: CSVDataSource) -> None:
-        """Llamado cuando el usuario carga el CSV desde la Calculadora."""
-        self._ds = ds
-        self._prices_frame.set_datasource(ds)
-        self._presets_frame.set_datasource(ds)
-
     def _on_prices_data_changed(self) -> None:
         """Llamado cuando se modifica un precio en la pestaña de Gestión."""
         if self._ds:

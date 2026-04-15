@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from presets import CSVPresetSource, SLOTS
-from data import CSVDataSource
+from data import CSVDataSource, SLOT_CATEGORY
 
 
 class PresetsFrame(ttk.Frame):
@@ -140,13 +140,17 @@ class _PresetDialog(tk.Toplevel):
         self._name_var = tk.StringVar(value=self._initial_name)
         ttk.Entry(self, textvariable=self._name_var, width=26).grid(row=0, column=1, padx=8, pady=4)
 
-        # Un ComboBox por slot
-        item_list = [""] + (list(self._ds.get_all().keys()) if self._ds else [])
+        # Un ComboBox por slot, filtrado por categoría
         self._slot_vars: dict[str, tk.StringVar] = {}
         for i, slot in enumerate(SLOTS):
             ttk.Label(self, text=slot.capitalize() + ":").grid(
                 row=i + 1, column=0, padx=8, pady=3, sticky="e"
             )
+            cat = SLOT_CATEGORY.get(slot)
+            if cat and self._ds:
+                item_list = [""] + self._ds.get_items_by_category(cat)
+            else:
+                item_list = [""]
             var = tk.StringVar(value=self._initial_slots.get(slot, ""))
             combo = ttk.Combobox(self, textvariable=var, values=item_list,
                                  state="normal", width=24)

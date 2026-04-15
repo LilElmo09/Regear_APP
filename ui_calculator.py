@@ -4,10 +4,10 @@ ui_calculator.py — Pestaña 1: Calculadora de Regear.
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, messagebox
 
 from calculator import calculate_total
-from data import CSVDataSource, TIERS, ALL_CATEGORIES
+from data import CSVDataSource, TIERS, SLOT_CATEGORY
 
 SLOT_LABELS = ["Arma", "Offhand", "Casco", "Armadura", "Botas", "Capa", "Mochila", "Comida", "Montura"]
 DEFAULT_TIER = "T8"
@@ -68,11 +68,10 @@ class SlotRow:
 
 
 class CalculatorFrame(ttk.Frame):
-    def __init__(self, parent: tk.Widget, preset_source, on_prices_loaded=None):
+    def __init__(self, parent: tk.Widget, preset_source):
         super().__init__(parent)
         self._ds: CSVDataSource | None = None
         self._preset_source = preset_source
-        self._on_prices_loaded = on_prices_loaded
         self._slots: list[SlotRow] = []
         self._build_ui()
 
@@ -112,12 +111,6 @@ class CalculatorFrame(ttk.Frame):
         # Tick / Untick
         ttk.Button(ctrl, text="Tick All",   command=lambda: self._tick_all(True) ).grid(row=0, column=9, padx=(8, 2))
         ttk.Button(ctrl, text="Untick All", command=lambda: self._tick_all(False)).grid(row=0, column=10, padx=(0, 8))
-
-        # Load Prices
-        self._price_status = tk.StringVar(value="Prices NOT loaded")
-        self._status_label = tk.Label(ctrl, textvariable=self._price_status, foreground="red")
-        self._status_label.grid(row=0, column=11, padx=(8, 4))
-        ttk.Button(ctrl, text="Load Prices", command=self._load_prices).grid(row=0, column=12)
 
         # ── Resultado ──────────────────────────────────────────────────
         result_frame = ttk.Frame(self)
@@ -159,7 +152,7 @@ class CalculatorFrame(ttk.Frame):
 
     def _calculate(self) -> None:
         if self._ds is None:
-            messagebox.showwarning("Sin datos", "Carga los precios primero con 'Load Prices'.")
+            messagebox.showwarning("Sin datos", "No hay precios cargados.")
             return
         try:
             pct = float(self._pct_var.get())
@@ -174,34 +167,13 @@ class CalculatorFrame(ttk.Frame):
             f"Total bruto: {bruto:,} silver   →   Con {pct:.0f}%: {final:,} silver"
         )
 
-    def _load_prices(self, path: str | None = None) -> None:
-        if path is None:
-            path = filedialog.askopenfilename(
-                title="Seleccionar CSV de precios",
-                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-            )
-        if not path:
-            return
-        try:
-            if self._ds is None:
-                self._ds = CSVDataSource(path)
-            else:
-                self._ds.reload(path)
-            self._price_status.set("Prices loaded ✓")
-            self._status_label.configure(foreground="green")
-            # Actualizar listas de ítems en cada slot
-            self._refresh_slot_items()
-            if self._on_prices_loaded:
-                self._on_prices_loaded(self._ds)
-        except Exception as exc:
-            messagebox.showerror("Error al cargar", str(exc))
-
     def _refresh_slot_items(self) -> None:
         if self._ds is None:
             return
-        all_items = list(self._ds.get_all().keys())
-        for slot in self._slots:
-            slot.refresh_items(all_items)
+        for slot_row, label in zip(self._slots, SLOT_LABELS):
+            cat = SLOT_CATEGORY.get(label.lower())
+            items = self._ds.get_items_by_category(cat) if cat else []
+            slot_row.refresh_items(items)
 
     def _load_preset(self, nombre: str) -> None:
         presets = self._preset_source.get_all()
