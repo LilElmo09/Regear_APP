@@ -6,11 +6,25 @@ from __future__ import annotations
 
 import csv
 import datetime
+import gzip
 import json
+import logging
 import os
 import time
 import urllib.request
 from abc import ABC, abstractmethod
+
+# Configurar logging para debugging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.StreamHandler(),  # Console output
+        logging.FileHandler('regear_api.log')  # File output
+    ]
+)
+logger = logging.getLogger(__name__)
 
 TIERS = ["T7", "T8", "T9", "T10", "T11"]
 
@@ -38,11 +52,18 @@ SLOT_CATEGORY: dict[str, str | None] = {
 }
 
 # Constantes AODP
-AODP_URL      = "https://west.albion-online-data.com/api/v2/stats/prices"
-AODP_CITY     = "Lymhurst"
-AODP_QUALITY  = 2
-AODP_COOLDOWN = 60   # segundos mínimos entre llamadas
-AODP_BATCH    = 100  # IDs por request
+AODP_URL             = "https://west.albion-online-data.com/api/v2/stats/history"
+AODP_CITY            = "Lymhurst"
+AODP_QUALITY         = 2
+AODP_TIMESCALE       = "24"  # Datos diarios
+AODP_DATE_RANGE_DAYS = 30    # Últimos 30 días
+AODP_COOLDOWN        = 60    # Segundos mínimos entre llamadas
+AODP_BATCH           = 100   # Parámetro legacy (no se usa en historia)
+AODP_DELAY           = 1.0   # Segundos entre batch requests
+AODP_WORKERS         = 1     # No usado directamente (batch es secuencial)
+AODP_MAX_RETRIES     = 4     # Reintentos máximos en caso de 429
+AODP_RETRY_BASE      = 5.0   # Base para backoff exponencial en segundos
+AODP_BATCH_SIZE      = 50    # IDs por batch request (max recomendado ~100)
 
 # Mapeo tier app → (prefijo_albion, sufijo_encantamiento)
 TIER_API = {
@@ -203,11 +224,123 @@ class APIDataSource(DataSource):
         self._last_fetch: float = 0.0
         self._status: str = "Sin actualizar — presiona Actualizar"
 
+    # ── Métodos privados ────────────────────────────────────────────────────
+
+    def _fetch_batch(self, batch_ids: list[str], item_map: dict,
+                     start_date: str, end_date: str) -> list[dict]:
+        """
+        Consulta precios históricos de un lote de full_ids en una sola request.
+        La API de AODP acepta múltiples IDs separados por coma en la URL.
+
+        Retorna lista de dicts con estructura:
+        {'full_id', 'name', 'tier', 'price', 'error', 'zero_reason'}
+        """
+        ids_str = ",".join(batch_ids)
+        url = (f"{AODP_URL}/{ids_str}.json"
+               f"?qualities={AODP_QUALITY}"
+               f"&time-scale={AODP_TIMESCALE}"
+               f"&date={start_date}"
+               f"&end_date={end_date}")
+
+        logger.debug(f"[Batch {len(batch_ids)} items] URL: {url[:120]}...")
+
+        last_error: str | None = None
+
+        for attempt in range(AODP_MAX_RETRIES + 1):
+            try:
+                req = urllib.request.Request(url)
+                req.add_header('Accept-Encoding', 'gzip')
+                req.add_header('User-Agent', 'RegearApp/1.0')
+
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    raw = resp.read()
+                    if raw[:2] == b'\x1f\x8b':
+                        raw = gzip.decompress(raw)
+                    response = json.loads(raw.decode('utf-8'))
+
+                # La API devuelve una lista, una entrada por full_id.
+                # Cada entrada tiene: {"item_id": "...", "data": [...]}
+                price_by_id: dict[str, int] = {}
+                if isinstance(response, list):
+                    for entry in response:
+                        item_id = entry.get("item_id", "")
+                        data_array = entry.get("data", [])
+                        if data_array:
+                            price_by_id[item_id] = data_array[-1].get("avg_price", 0)
+                        else:
+                            price_by_id[item_id] = 0
+
+                # Construir resultados para cada id del batch
+                results = []
+                for full_id in batch_ids:
+                    name, tier = item_map[full_id]
+                    if full_id not in price_by_id:
+                        logger.warning(f"[{name} ({tier})] ID no encontrado en respuesta del batch")
+                        results.append({
+                            'full_id': full_id, 'name': name, 'tier': tier,
+                            'price': 0, 'error': None, 'zero_reason': "sin respuesta"
+                        })
+                        continue
+                    price = price_by_id[full_id]
+                    if price > 0:
+                        logger.debug(f"[{name} ({tier})] ✓ {price}")
+                        results.append({
+                            'full_id': full_id, 'name': name, 'tier': tier,
+                            'price': price, 'error': None, 'zero_reason': None
+                        })
+                    else:
+                        results.append({
+                            'full_id': full_id, 'name': name, 'tier': tier,
+                            'price': 0, 'error': None, 'zero_reason': "precio = 0 o sin datos"
+                        })
+                return results
+
+            except urllib.error.HTTPError as http_err:
+                if http_err.code == 429 and attempt < AODP_MAX_RETRIES:
+                    wait = AODP_RETRY_BASE * (2 ** attempt)
+                    logger.warning(
+                        f"[Batch] 429 recibido, reintento {attempt + 1}/{AODP_MAX_RETRIES} "
+                        f"en {wait:.0f}s..."
+                    )
+                    time.sleep(wait)
+                    continue
+                last_error = f"HTTP Error {http_err.code}: {http_err.reason}"
+                logger.error(f"[Batch] ✗ {last_error}")
+                break
+
+            except urllib.error.URLError as url_err:
+                last_error = f"URL Error: {url_err.reason}"
+                logger.error(f"[Batch] ✗ {last_error}")
+                break
+
+            except json.JSONDecodeError as json_err:
+                last_error = f"JSON Decode Error: {str(json_err)}"
+                logger.error(f"[Batch] ✗ {last_error}")
+                break
+
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {str(exc)}"
+                logger.error(f"[Batch] ✗ Error inesperado: {last_error}", exc_info=True)
+                break
+
+            finally:
+                time.sleep(AODP_DELAY)
+
+        # Si todos los reintentos fallaron, marcar todo el batch como error
+        return [
+            {
+                'full_id': fid, 'name': item_map[fid][0], 'tier': item_map[fid][1],
+                'price': 0, 'error': last_error, 'zero_reason': None
+            }
+            for fid in batch_ids
+        ]
+
     # ── API pública ─────────────────────────────────────────────────────────
 
     def refresh(self) -> dict:
         """
-        Consulta la AODP API y actualiza los precios en memoria.
+        Consulta la AODP API endpoint /history y actualiza los precios en memoria.
+        Extrae el último avg_price del array de datos históricos (últimos 30 días).
         Respeta un cooldown de AODP_COOLDOWN segundos entre llamadas.
         
         Retorna un dict con estructura:
@@ -217,13 +350,18 @@ class APIDataSource(DataSource):
             'updated': int,  # Precios actualizados
             'errors': list[str],  # Errores
             'items_not_found': list[str],  # Items sin api_id
-            'prices_zero': list[str],  # Items con precio 0
+            'prices_zero': list[str],  # Items con precio 0 o sin datos
         }
         """
+        logger.info("=" * 70)
+        logger.info("INICIANDO ACTUALIZACIÓN DE PRECIOS")
+        logger.info("=" * 70)
+        
         now = time.time()
         elapsed = now - self._last_fetch
         if self._last_fetch > 0 and elapsed < AODP_COOLDOWN:
             remaining = int(AODP_COOLDOWN - elapsed)
+            logger.warning(f"Cooldown activo: {remaining}s restantes")
             return {
                 'success': False,
                 'message': f"Espera {remaining}s antes de volver a actualizar",
@@ -233,21 +371,35 @@ class APIDataSource(DataSource):
                 'prices_zero': [],
             }
 
+        # Calcular rango de fechas: últimos N días
+        today = datetime.datetime.now()
+        start_date_obj = today - datetime.timedelta(days=AODP_DATE_RANGE_DAYS)
+        end_date = today.strftime("%Y-%m-%d")
+        start_date = start_date_obj.strftime("%Y-%m-%d")
+        
+        logger.info(f"Rango de fechas: {start_date} a {end_date} ({AODP_DATE_RANGE_DAYS} días)")
+        logger.debug(f"Constantes API: WORKERS={AODP_WORKERS}, DELAY={AODP_DELAY}s, COOLDOWN={AODP_COOLDOWN}s")
+
         # Construir mapa full_api_id → (nombre_item, tier)
         item_map: dict[str, tuple[str, str]] = {}
         items_without_api_id: list[str] = []
         
+        logger.info("Construyendo mapa de items...")
         for name, data in self._data.items():
             base_id = data.get("api_id", "")
             if not base_id:
                 items_without_api_id.append(name)
+                logger.debug(f"Item sin api_id: {name}")
                 continue
             for tier in TIERS:
                 prefix, suffix = TIER_API[tier]
                 full_id = f"{prefix}_{base_id}{suffix}"
                 item_map[full_id] = (name, tier)
+        
+        logger.info(f"Mapa construido: {len(item_map)} items, {len(items_without_api_id)} sin api_id")
 
         if not item_map:
+            logger.error("Ningún ítem tiene api_id — abortando actualización")
             return {
                 'success': False,
                 'message': "Ningún ítem tiene api_id — nada que actualizar",
@@ -257,36 +409,55 @@ class APIDataSource(DataSource):
                 'prices_zero': [],
             }
 
-        ids = list(item_map.keys())
+        full_ids = list(item_map.keys())
         errors: list[str] = []
         updated = 0
         prices_zero: list[str] = []
 
-        for i in range(0, len(ids), AODP_BATCH):
-            batch = ids[i:i + AODP_BATCH]
-            url = (f"{AODP_URL}/{','.join(batch)}"
-                   f"?locations={AODP_CITY}&qualities={AODP_QUALITY}")
-            try:
-                with urllib.request.urlopen(url, timeout=10) as resp:
-                    for entry in json.loads(resp.read()):
-                        full_id = entry.get("item_id", "")
-                        price   = entry.get("sell_price_min", 0)
-                        if full_id in item_map:
-                            name, tier = item_map[full_id]
-                            if price > 0:
-                                self._data[name][tier] = price
-                                updated += 1
-                            elif price == 0:
-                                prices_zero.append(f"{name} ({tier})")
-            except Exception as exc:
-                errors.append(str(exc))
+        # Dividir en batches y procesar secuencialmente
+        batches = [full_ids[i:i + AODP_BATCH_SIZE]
+                   for i in range(0, len(full_ids), AODP_BATCH_SIZE)]
+        total_batches = len(batches)
+        logger.info(f"Procesando {len(full_ids)} IDs en {total_batches} batches de {AODP_BATCH_SIZE}...")
+
+        for batch_num, batch in enumerate(batches, 1):
+            logger.info(f"[Batch {batch_num}/{total_batches}] {len(batch)} items...")
+            results = self._fetch_batch(batch, item_map, start_date, end_date)
+
+            for result in results:
+                name = result['name']
+                tier = result['tier']
+                price = result['price']
+                error = result['error']
+                zero_reason = result['zero_reason']
+
+                if error:
+                    errors.append(f"{name} ({tier}): {error}")
+                elif price > 0:
+                    self._data[name][tier] = price
+                    updated += 1
+                elif zero_reason:
+                    prices_zero.append(f"{name} ({tier}) — {zero_reason}")
 
         self._last_fetch = time.time()
         
+        logger.info("=" * 70)
+        logger.info(f"RESUMEN DE ACTUALIZACIÓN:")
+        logger.info(f"  Precios actualizados: {updated}")
+        logger.info(f"  Errores: {len(errors)}")
+        logger.info(f"  Sin datos: {len(prices_zero)}")
+        logger.info(f"  Items sin api_id: {len(items_without_api_id)}")
+        logger.info("=" * 70)
+        
+        if errors:
+            logger.error(f"Errores encontrados ({len(errors)}):")
+            for err in errors:
+                logger.error(f"  - {err}")
+        
         ts = datetime.datetime.now().strftime("%H:%M")
         if errors:
-            message = f"Error: {errors[0]}"
-            success = False
+            message = f"Actualizado a las {ts} ({updated} precios) — {len(errors)} error(es)"
+            success = len(errors) < len(full_ids)  # Éxito parcial si algunos items se actualizaron
         else:
             message = f"Actualizado a las {ts} ({updated} precios)"
             success = True

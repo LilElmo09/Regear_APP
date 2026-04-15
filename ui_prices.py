@@ -3,6 +3,7 @@ ui_prices.py — Pestaña 2: Gestión de Precios (CRUD).
 """
 from __future__ import annotations
 
+import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -26,16 +27,21 @@ class PricesFrame(ttk.Frame):
         top.pack(fill="x", padx=8, pady=6)
 
         ttk.Button(top, text="Guardar",      command=self._save      ).grid(row=0, column=0, padx=4)
-        ttk.Button(top, text="↻ Actualizar", command=self._actualizar).grid(row=0, column=1, padx=4)
+        self._btn_actualizar = ttk.Button(top, text="↻ Actualizar", command=self._actualizar)
+        self._btn_actualizar.grid(row=0, column=1, padx=4)
 
         self._status_lbl = tk.StringVar(value="")
         ttk.Label(top, textvariable=self._status_lbl,
-                  foreground="gray").grid(row=0, column=2, padx=(8, 16))
+                  foreground="gray").grid(row=0, column=2, padx=(8, 4))
 
-        ttk.Label(top, text="Buscar:").grid(row=0, column=3, padx=(0, 4))
+        self._progress = ttk.Progressbar(top, mode="indeterminate", length=150)
+        self._progress.grid(row=0, column=3, padx=(0, 16))
+        self._progress.grid_remove()
+
+        ttk.Label(top, text="Buscar:").grid(row=0, column=4, padx=(0, 4))
         self._search_var = tk.StringVar()
         self._search_var.trace_add("write", self._on_search)
-        ttk.Entry(top, textvariable=self._search_var, width=20).grid(row=0, column=4)
+        ttk.Entry(top, textvariable=self._search_var, width=20).grid(row=0, column=5)
 
         # ── Treeview ────────────────────────────────────────────────────
         tree_frame = ttk.Frame(self)
@@ -104,46 +110,31 @@ class PricesFrame(ttk.Frame):
         if self._ds is None:
             messagebox.showwarning("Sin datos", "No hay datos cargados.")
             return
-        
-        # Si es APIDataSource, obtener precios desde la API
+
         if isinstance(self._ds, APIDataSource):
+            self._btn_actualizar.config(state="disabled")
+            self._progress.grid()
+            self._progress.start(10)
             self._status_lbl.set("Actualizando desde API...")
-            self.update()
-            # Ejecutar refresh y obtener reporte detallado
-            result = self._ds.refresh()
-            # Guardar los cambios en CSV como caché
-            self._ds.save()
-            # Mostrar el mensaje principal
-            self._status_lbl.set(result['message'])
-            
-            # COMENTADO PARA PRODUCCION - Reporte detallado solo para debugging
-            # if result['items_not_found'] or result['prices_zero'] or result['errors']:
-            #     report = "REPORTE DE ACTUALIZACION:\n\n"
-            #     report += f"Precios actualizados: {result['updated']}\n"
-            #     
-            #     if result['items_not_found']:
-            #         report += f"\nItems SIN api_id ({len(result['items_not_found'])}):\n"
-            #         for item in result['items_not_found']:
-            #             report += f"  - {item}\n"
-            #     
-            #     if result['prices_zero']:
-            #         report += f"\nItems con PRECIO 0 en API ({len(result['prices_zero'])}):\n"
-            #         for item in result['prices_zero'][:10]:  # Mostrar max 10
-            #             report += f"  - {item}\n"
-            #         if len(result['prices_zero']) > 10:
-            #             report += f"  ... y {len(result['prices_zero']) - 10} mas\n"
-            #     
-            #     if result['errors']:
-            #         report += f"\nErrores:\n"
-            #         for err in result['errors']:
-            #             report += f"  - {err}\n"
-            #     
-            #     messagebox.showinfo("Reporte de Actualizacion", report)
+
+            def _run() -> None:
+                result = self._ds.refresh()
+                self._ds.save()
+                self.after(0, lambda: self._on_refresh_done(result))
+
+            threading.Thread(target=_run, daemon=True).start()
         else:
-            # Si es CSVDataSource, solo recargar desde archivo
             self._ds.reload()
             self._status_lbl.set("CSV recargado")
-        
+            self._populate()
+            if self._on_data_changed:
+                self._on_data_changed()
+
+    def _on_refresh_done(self, result: dict) -> None:
+        self._progress.stop()
+        self._progress.grid_remove()
+        self._btn_actualizar.config(state="normal")
+        self._status_lbl.set(result['message'])
         self._populate()
         if self._on_data_changed:
             self._on_data_changed()

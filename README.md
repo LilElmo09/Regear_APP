@@ -104,7 +104,7 @@ Los precios se cargan automáticamente al iniciar la app si el CSV existe.
 - **"+ Nuevo ítem"** abre el mismo diálogo para agregar un ítem nuevo
 - **"Eliminar"** elimina el ítem seleccionado
 - **"Guardar"** persiste los cambios al CSV
-- **"↻ Actualizar"** recarga los datos desde el CSV en disco
+- **"↻ Actualizar"** consulta la AODP API en segundo plano y actualiza todos los precios; muestra una barra de progreso animada mientras carga y el botón se deshabilita hasta que termina
 - Barra de búsqueda para filtrar ítems por nombre
 
 ## Pestaña 3 — Gestión de Presets
@@ -117,24 +117,31 @@ Los precios se cargan automáticamente al iniciar la app si el CSV existe.
 
 `APIDataSource` está disponible en `data.py` para obtener precios en vivo desde la [Albion Online Data Project](https://www.albion-online-data.com/).
 
-**Parámetros:** Ciudad: `Lymhurst`, Calidad: `2` (Good)
+**Parámetros:** Calidad: `2` (Good), escala temporal: `24h`, últimos `30` días
 
 **Construcción de IDs para la API:**
 ```
 T7  → T7_{api_id}
-T8  → T8_{api_id}
-T9  → T8_{api_id}@1
-T10 → T8_{api_id}@2
+T8  → T5_{api_id}@3
+T9  → T6_{api_id}@3
+T10 → T7_{api_id}@3
 T11 → T8_{api_id}@3
 ```
 
 **Comportamiento:**
 - Carga datos del CSV al inicializarse (sin llamada a la red)
-- `refresh()` hace la llamada a la AODP y actualiza precios en memoria
+- `refresh()` agrupa todos los IDs en batches de 50 y los consulta en pocas requests a la AODP, actualizando precios en memoria
+- Reintentos automáticos con backoff exponencial (hasta 4 reintentos) si la API devuelve 429
 - Cooldown de 60 segundos entre actualizaciones
 - Solo consulta ítems que tienen `api_id` en el CSV
 - Si la API no responde, los precios del CSV se conservan
 - `save()` persiste los precios obtenidos de vuelta al CSV (caché offline)
+
+**Rendimiento:**
+| Modo | Requests | Tiempo estimado |
+|------|----------|-----------------|
+| Antiguo (1 request/ID) | ~1,250 | ~42 min |
+| Actual (batch de 50) | ~25 | < 1 min |
 
 ## Flujo entre pestañas
 
@@ -153,4 +160,5 @@ main.py (RegearApp)
 Solo librería estándar de Python — sin pip, sin requirements.txt:
 - `tkinter` + `tkinter.ttk` — GUI
 - `csv`, `os`, `abc` — datos y sistema
-- `urllib.request`, `json`, `time`, `datetime` — integración con la API AODP
+- `urllib.request`, `json`, `gzip`, `time`, `datetime` — integración con la API AODP
+- `threading` — actualización de precios en segundo plano sin bloquear la UI
