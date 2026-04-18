@@ -531,7 +531,7 @@ class APIDataSource(DataSource):
 
         stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
         filename = f"precios_no_actualizados_{stamp}.csv"
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = os.path.dirname(os.path.abspath(self._csv.get_path()))
         path = os.path.join(base_dir, filename)
 
         try:
