@@ -139,6 +139,20 @@ class PricesFrame(ttk.Frame):
         if self._on_data_changed:
             self._on_data_changed()
 
+        failed_csv = result.get('failed_csv_path')
+        if failed_csv:
+            n_errors = len(result.get('errors', []))
+            n_zero = len(result.get('prices_zero', []))
+            n_noapi = len(result.get('items_not_found', []))
+            messagebox.showinfo(
+                "Items no actualizados",
+                f"Se generó un CSV con los items que no se pudieron actualizar:\n\n"
+                f"{failed_csv}\n\n"
+                f"• Errores: {n_errors}\n"
+                f"• Sin datos / precio 0: {n_zero}\n"
+                f"• Sin api_id: {n_noapi}"
+            )
+
     # ─────────────────────────────── inline edit double-click (solo precios)
     # Columnas de precio comienzan en el índice 3 (tras item, categoria, api_id)
     _PRICE_COL_OFFSET = 3

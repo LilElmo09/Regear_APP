@@ -96,6 +96,39 @@ def _detect_category(name: str) -> str:
     return "Arma"
 
 
+def _parse_error_entry(entry: str) -> tuple[str, str, str]:
+    """Parsea 'nombre (tier): motivo' → (nombre, tier, motivo)."""
+    try:
+        head, reason = entry.split(":", 1)
+        head = head.strip()
+        reason = reason.strip()
+        paren = head.rfind("(")
+        if paren != -1 and head.endswith(")"):
+            name = head[:paren].strip()
+            tier = head[paren + 1:-1].strip()
+            return name, tier, reason
+        return head, "", reason
+    except ValueError:
+        return entry, "", ""
+
+
+def _parse_zero_entry(entry: str) -> tuple[str, str, str]:
+    """Parsea 'nombre (tier) — motivo' → (nombre, tier, motivo)."""
+    sep = " — "
+    if sep in entry:
+        head, reason = entry.split(sep, 1)
+    else:
+        head, reason = entry, ""
+    head = head.strip()
+    reason = reason.strip()
+    paren = head.rfind("(")
+    if paren != -1 and head.endswith(")"):
+        name = head[:paren].strip()
+        tier = head[paren + 1:-1].strip()
+        return name, tier, reason
+    return head, "", reason
+
+
 # ─────────────────────────────────────────────────────────── Interfaz abstracta
 
 class DataSource(ABC):
@@ -430,7 +463,7 @@ class APIDataSource(DataSource):
                     prices_zero.append(f"{name} ({tier}) — {zero_reason}")
 
         self._last_fetch = time.time()
-        
+
         logger.info("=" * 70)
         logger.info(f"RESUMEN DE ACTUALIZACIÓN:")
         logger.info(f"  Precios actualizados: {updated}")
@@ -438,12 +471,14 @@ class APIDataSource(DataSource):
         logger.info(f"  Sin datos: {len(prices_zero)}")
         logger.info(f"  Items sin api_id: {len(items_without_api_id)}")
         logger.info("=" * 70)
-        
+
         if errors:
             logger.error(f"Errores encontrados ({len(errors)}):")
             for err in errors:
                 logger.error(f"  - {err}")
-        
+
+        failed_csv_path = self._write_failed_csv(errors, prices_zero, items_without_api_id)
+
         ts = datetime.datetime.now().strftime("%H:%M")
         if errors:
             message = f"Actualizado a las {ts} ({updated} precios) — {len(errors)} error(es)"
@@ -451,7 +486,7 @@ class APIDataSource(DataSource):
         else:
             message = f"Actualizado a las {ts} ({updated} precios)"
             success = True
-        
+
         self._status = message
         return {
             'success': success,
@@ -460,7 +495,55 @@ class APIDataSource(DataSource):
             'errors': errors,
             'items_not_found': items_without_api_id,
             'prices_zero': prices_zero,
+            'failed_csv_path': failed_csv_path,
         }
+
+    def _write_failed_csv(
+        self,
+        errors: list[str],
+        prices_zero: list[str],
+        items_without_api_id: list[str],
+    ) -> str | None:
+        """
+        Escribe un CSV con todos los items/tiers que no se actualizaron.
+        Retorna la ruta del CSV generado, o None si no hubo fallos.
+        Columnas: nombre, tier, motivo
+        """
+        rows: list[tuple[str, str, str]] = []
+
+        # errors: "nombre (tier): motivo"
+        for entry in errors:
+            name, tier, reason = _parse_error_entry(entry)
+            rows.append((name, tier, reason))
+
+        # prices_zero: "nombre (tier) — motivo"
+        for entry in prices_zero:
+            name, tier, reason = _parse_zero_entry(entry)
+            rows.append((name, tier, reason))
+
+        # items_without_api_id: solo nombres
+        for name in items_without_api_id:
+            rows.append((name, "todos los tiers", "sin api_id"))
+
+        if not rows:
+            logger.info("No hay items fallidos — no se genera CSV de no actualizados")
+            return None
+
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
+        filename = f"precios_no_actualizados_{stamp}.csv"
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(base_dir, filename)
+
+        try:
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["nombre", "tier", "motivo"])
+                writer.writerows(rows)
+            logger.info(f"CSV de no actualizados generado: {path} ({len(rows)} filas)")
+            return path
+        except OSError as e:
+            logger.error(f"No se pudo escribir CSV de no actualizados: {e}")
+            return None
 
     def get_status(self) -> str:
         return self._status
