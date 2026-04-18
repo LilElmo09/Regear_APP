@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import time
+import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
 
@@ -52,13 +53,10 @@ SLOT_CATEGORY: dict[str, str | None] = {
 }
 
 # Constantes AODP
-AODP_URL             = "https://west.albion-online-data.com/api/v2/stats/history"
-AODP_CITY            = "Lymhurst"
+AODP_URL             = "https://west.albion-online-data.com/api/v2/stats/prices"
+AODP_CITIES          = ["Lymhurst", "Fort Sterling", "Bridgewatch", "Martlock"]
 AODP_QUALITY         = 2
-AODP_TIMESCALE       = "24"  # Datos diarios
-AODP_DATE_RANGE_DAYS = 30    # Últimos 30 días
 AODP_COOLDOWN        = 60    # Segundos mínimos entre llamadas
-AODP_BATCH           = 100   # Parámetro legacy (no se usa en historia)
 AODP_DELAY           = 1.0   # Segundos entre batch requests
 AODP_WORKERS         = 1     # No usado directamente (batch es secuencial)
 AODP_MAX_RETRIES     = 4     # Reintentos máximos en caso de 429
@@ -226,21 +224,19 @@ class APIDataSource(DataSource):
 
     # ── Métodos privados ────────────────────────────────────────────────────
 
-    def _fetch_batch(self, batch_ids: list[str], item_map: dict,
-                     start_date: str, end_date: str) -> list[dict]:
+    def _fetch_batch(self, batch_ids: list[str], item_map: dict) -> list[dict]:
         """
-        Consulta precios históricos de un lote de full_ids en una sola request.
-        La API de AODP acepta múltiples IDs separados por coma en la URL.
+        Consulta precios actuales de un lote de full_ids en una sola request.
+        Busca en las ciudades configuradas y guarda el sell_price_min más bajo.
 
         Retorna lista de dicts con estructura:
         {'full_id', 'name', 'tier', 'price', 'error', 'zero_reason'}
         """
         ids_str = ",".join(batch_ids)
-        url = (f"{AODP_URL}/{ids_str}.json"
+        cities_str = urllib.parse.quote(",".join(AODP_CITIES), safe=",")
+        url = (f"{AODP_URL}/{ids_str}"
                f"?qualities={AODP_QUALITY}"
-               f"&time-scale={AODP_TIMESCALE}"
-               f"&date={start_date}"
-               f"&end_date={end_date}")
+               f"&locations={cities_str}")
 
         logger.debug(f"[Batch {len(batch_ids)} items] URL: {url[:120]}...")
 
@@ -258,17 +254,16 @@ class APIDataSource(DataSource):
                         raw = gzip.decompress(raw)
                     response = json.loads(raw.decode('utf-8'))
 
-                # La API devuelve una lista, una entrada por full_id.
-                # Cada entrada tiene: {"item_id": "...", "data": [...]}
+                # La API /prices devuelve una entrada por item+ciudad.
+                # Guardamos el sell_price_min más bajo entre todas las ciudades.
                 price_by_id: dict[str, int] = {}
                 if isinstance(response, list):
                     for entry in response:
                         item_id = entry.get("item_id", "")
-                        data_array = entry.get("data", [])
-                        if data_array:
-                            price_by_id[item_id] = data_array[-1].get("avg_price", 0)
-                        else:
-                            price_by_id[item_id] = 0
+                        sell_price = entry.get("sell_price_min", 0) or 0
+                        if sell_price > 0:
+                            if item_id not in price_by_id or sell_price < price_by_id[item_id]:
+                                price_by_id[item_id] = sell_price
 
                 # Construir resultados para cada id del batch
                 results = []
@@ -340,7 +335,8 @@ class APIDataSource(DataSource):
     def refresh(self) -> dict:
         """
         Consulta la AODP API endpoint /history y actualiza los precios en memoria.
-        Extrae el último avg_price del array de datos históricos (últimos 30 días).
+        Consulta precios actuales del endpoint /prices en múltiples ciudades.
+        Guarda el sell_price_min más bajo entre las ciudades configuradas.
         Respeta un cooldown de AODP_COOLDOWN segundos entre llamadas.
         
         Retorna un dict con estructura:
@@ -371,13 +367,7 @@ class APIDataSource(DataSource):
                 'prices_zero': [],
             }
 
-        # Calcular rango de fechas: últimos N días
-        today = datetime.datetime.now()
-        start_date_obj = today - datetime.timedelta(days=AODP_DATE_RANGE_DAYS)
-        end_date = today.strftime("%Y-%m-%d")
-        start_date = start_date_obj.strftime("%Y-%m-%d")
-        
-        logger.info(f"Rango de fechas: {start_date} a {end_date} ({AODP_DATE_RANGE_DAYS} días)")
+        logger.info(f"Ciudades: {', '.join(AODP_CITIES)}")
         logger.debug(f"Constantes API: WORKERS={AODP_WORKERS}, DELAY={AODP_DELAY}s, COOLDOWN={AODP_COOLDOWN}s")
 
         # Construir mapa full_api_id → (nombre_item, tier)
@@ -422,7 +412,7 @@ class APIDataSource(DataSource):
 
         for batch_num, batch in enumerate(batches, 1):
             logger.info(f"[Batch {batch_num}/{total_batches}] {len(batch)} items...")
-            results = self._fetch_batch(batch, item_map, start_date, end_date)
+            results = self._fetch_batch(batch, item_map)
 
             for result in results:
                 name = result['name']
